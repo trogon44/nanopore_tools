@@ -1,5 +1,4 @@
-from Bio import SeqIO, SeqRecord
-from Bio.Seq import Seq
+from Bio import SeqIO, SeqRecord, Seq
 import matplotlib.pyplot as plt
 from Levenshtein import distance as lev_dist
 import pysam
@@ -139,7 +138,7 @@ class NanoporeMap():
         # Overwrite variable region with N's and align to this instead.
         if overwrite_var_region:
             print("Writing new backbone plasmid with variable region overwritten as N's.")
-            overwrite_seq = Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
+            overwrite_seq = Seq.Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
             new_backbone_fasta = self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix
             new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
                                             id = self.backbone_seqrecord.name + "_Ns",
@@ -201,7 +200,7 @@ class NanoporeMap():
             
                 seqrecord = SeqRecord.SeqRecord( name =  name,
                                                 id = name,
-                                                seq = Seq(alignment.query_sequence[query_var_start:query_var_end]),
+                                                seq = Seq.Seq(alignment.query_sequence[query_var_start:query_var_end]),
                                                 description = "aligned to variable region",
                                                 letter_annotations={"phred_quality": quality_scores})
 
@@ -260,7 +259,7 @@ class NanoporeMap():
         # Overwrite variable region with N's and align to this instead.
         if overwrite_var_region:
             print("Writing new backbone plasmid with variable region overwritten as N's.")
-            overwrite_seq = Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
+            overwrite_seq = Seq.Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
             new_backbone_fasta = self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix
             new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
                                             id = self.backbone_seqrecord.name + "_Ns",
@@ -339,7 +338,7 @@ class NanoporeMap():
             
                 seqrecord = SeqRecord.SeqRecord( name =  name,
                                                 id = name,
-                                                seq = Seq(alignment.query_sequence[query_var_start:query_var_end]),
+                                                seq = Seq.Seq(alignment.query_sequence[query_var_start:query_var_end]),
                                                 description = "aligned to variable region",
                                                 letter_annotations={"phred_quality": quality_scores})
 
