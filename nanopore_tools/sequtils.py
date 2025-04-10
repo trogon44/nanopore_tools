@@ -139,7 +139,7 @@ class NanoporeMap():
         if overwrite_var_region:
             print("Writing new backbone plasmid with variable region overwritten as N's.")
             overwrite_seq = Seq.Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
-            new_backbone_fasta = self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix
+            new_backbone_fasta = self.backbone_fasta.parent / (self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix)
             new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
                                             id = self.backbone_seqrecord.name + "_Ns",
                                             seq = overwrite_seq,
@@ -260,7 +260,7 @@ class NanoporeMap():
         if overwrite_var_region:
             print("Writing new backbone plasmid with variable region overwritten as N's.")
             overwrite_seq = Seq.Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
-            new_backbone_fasta = self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix
+            new_backbone_fasta = self.backbone_fasta.parent / (self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix)
             new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
                                             id = self.backbone_seqrecord.name + "_Ns",
                                             seq = overwrite_seq,
@@ -280,7 +280,7 @@ class NanoporeMap():
                                             id = self.backbone_seqrecord.name + "_doubled",
                                             seq = doubled_seq,
                                             description = "backbone vector doubled outside of variable region")
-            new_backbone_fasta = self.backbone_fasta.stem + '_doubled' + self.backbone_fasta.suffix
+            new_backbone_fasta = self.backbone_fasta.parent / (self.backbone_fasta.stem + '_doubled' + self.backbone_fasta.suffix)
             self.backbone_fasta = new_backbone_fasta
             self.backbone_seqrecord = new_backbone_seqrecord
 
