@@ -133,7 +133,7 @@ class NanoporeMap():
         filter_records = [self.fastq_index[k] for k in filter_keys]
         print(f"{len(filter_records)}/{self.read_count} reads passed length and quality checks.")
 
-        temp_fastq = 'temp.fastq'
+        temp_fastq = self.reads_fastq.parent / 'temp.fastq'
         SeqIO.write(filter_records, temp_fastq, 'fastq')
 
         # Overwrite variable region with N's and align to this instead.
@@ -153,7 +153,7 @@ class NanoporeMap():
             print(f"New backbone fasta written as: {self.backbone_fasta}") 
 
 
-        temp_align = 'temp.sam'
+        temp_align = self.reads_fastq.parent / 'temp.sam'
         minimap2_call = f'minimap2 -ax map-ont {self.backbone_fasta} {temp_fastq} > {temp_align}'
         
         print(minimap2_call)
@@ -212,7 +212,146 @@ class NanoporeMap():
         print(f"bad_map_count = {cnt_bad_map}; bad_cov_var = {cnt_cov_var}")
         if return_seqs:
             return seqrecords
+
+    # filter reads according to selection criteria and create pairwise alignment dictionary with minimap2
+    def align2backbone1(self, backbone_qscore_cutoff = 20, min_length = 1000, return_seqs = False, var_region_qscore_cuttoff = 30, overwrite_var_region = False, double_plasmid = False):
+        """"
+
+        Aligns fastq sequences to a backbone plasmid fasta.
+
+        Usage:
+        align2backbone(qscore_cutoff = 20, min_length = 1000, buffer = 5, return_seqs = False)
+
+        Description:
+        This function aligns the fastq reads to the backbone fasta and extracts
+        the sequence matching the variable region +/- the specified buffer zone
+        and writes a fastq.
+        If return_seqs is True it will return a list of biopython seqrecords of
+        the sequences in the fastq.
+
+        Parameters
+        -----------------------------------------------------
+        qscore_cutoff (float, default 20): minimum average read Q-score allowed
+        min_length (int, default 1000): minimum allowed read length
+        buffer (int, default 5): amount of buffer sequence on either side of the variable region,
+        you might need this to be longer if there is a lot of different sizes of the variable region
+        return_seqs (boolean, default False)
+
+        Returns
+        -----------------------------------------------------
+        list of biopython seqrecords if return_seqs = True
+
+        """
+        # This is the index tracker that records modifications to the variable region start and stop indices for the backbone sequence
+        self.varDelta = 0
         
+        # check if fastqinfo exists. if not, create it.
+        if not hasattr(self, 'fastqinfo'):        
+            self.fastq_info(makeplot=False)
+
+            
+        filter_keys = self.fastqinfo[(self.fastqinfo['length'] > min_length) & (self.fastqinfo['mean_q'] > backbone_qscore_cutoff)].index
+        filter_records = [self.fastq_index[k] for k in filter_keys]
+        print(f"{len(filter_records)}/{self.read_count} reads passed length and quality checks.")
+
+        temp_fastq = self.reads_fastq.parent / 'temp.fastq'
+        SeqIO.write(filter_records, temp_fastq, 'fastq')
+
+        # Overwrite variable region with N's and align to this instead.
+        if overwrite_var_region:
+            print("Writing new backbone plasmid with variable region overwritten as N's.")
+            overwrite_seq = Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
+            new_backbone_fasta = self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix
+            new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
+                                            id = self.backbone_seqrecord.name + "_Ns",
+                                            seq = overwrite_seq,
+                                            description = "backbone vector with variable region as Ns")
+
+            self.backbone_fasta = new_backbone_fasta
+            self.backbone_seqrecord = new_backbone_seqrecord
+
+            if not double_plasmid:
+                SeqIO.write(self.backbone_seqrecord, self.backbone_fasta, 'fasta')
+                print(f"New backbone fasta written as: {self.backbone_fasta}")
+
+        if double_plasmid:
+            print("Writing new backbone fasta with duplicated non-variable regions.")
+            doubled_seq = Seq.Seq(self.backbone_seqrecord.seq[self.varEnd:] + self.backbone_seqrecord.seq + self.backbone_seqrecord.seq[:self.varStart:])
+            new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_doubled",
+                                            id = self.backbone_seqrecord.name + "_doubled",
+                                            seq = doubled_seq,
+                                            description = "backbone vector doubled outside of variable region")
+            new_backbone_fasta = self.backbone_fasta.stem + '_doubled' + self.backbone_fasta.suffix
+            self.backbone_fasta = new_backbone_fasta
+            self.backbone_seqrecord = new_backbone_seqrecord
+
+            SeqIO.write(self.backbone_seqrecord, self.backbone_fasta, 'fasta')
+            self.varDelta = len(self.backbone_seqrecord.seq[self.varEnd:])
+            print(f"New backbone fasta written as: {self.backbone_fasta}")
+                 
+
+
+        temp_align = self.reads_fastq.parent / 'temp.sam'
+        minimap2_call = f'minimap2 -ax map-ont {self.backbone_fasta} {temp_fastq} > {temp_align}'
+        
+        print(minimap2_call)
+        stderr = os.system(minimap2_call)
+        # exit with error if minimap2 returns abnormally
+        if stderr != 0:
+            raise OSError("Minimap2 command failed with abnormal exit status.")
+
+        print("Finished with alignment.")
+
+        seqrecords = []
+        cnt_bad_map = 0
+        cnt_cov_var = 0
+        with pysam.AlignmentFile(temp_align, "r") as alignments:
+            aname = ''
+            for alignment in alignments:
+                
+                if (alignment.is_unmapped) or (alignment.query_length > 1.1*len(self.backbone_seqrecord.seq)):
+                    cnt_bad_map += 1
+                    continue
+                covers_variable_region = (alignment.reference_start < self.varStart + self.varDelta) and (alignment.reference_end > self.varEnd + self.varDelta)
+                if not covers_variable_region:
+                    cnt_cov_var += 1
+                    continue            
+                        
+                name = alignment.query_name
+                if name == aname:
+                    continue
+                else:
+                    aname = name
+
+                pairwise = np.array(alignment.get_aligned_pairs(matches_only=True))
+                #qual_score = [ord(c)-33 for c in alignment.qqual]
+
+                try:
+                    query_var_start = pairwise[np.where(pairwise[:,1] < (self.varStart + self.varDelta - self.buffer))[0][-1],0]
+                    query_var_end = pairwise[np.where(pairwise[:,1] > (self.varEnd +self.varDelta + self.buffer))[0][0],0]
+                except:
+                    continue
+
+                
+                quality_scores = [alignment.query_qualities[i] for i in np.arange(query_var_start, query_var_end, 1)]
+                if np.mean(quality_scores) < var_region_qscore_cuttoff:
+                    continue
+            
+                seqrecord = SeqRecord.SeqRecord( name =  name,
+                                                id = name,
+                                                seq = Seq(alignment.query_sequence[query_var_start:query_var_end]),
+                                                description = "aligned to variable region",
+                                                letter_annotations={"phred_quality": quality_scores})
+
+                seqrecords.append(seqrecord)
+        self.temp_align_fastq = self.reads_fastq.parent / 'temp_aligned.fastq'
+        SeqIO.write(seqrecords, self.temp_align_fastq, 'fastq')
+        print(f"{len(seqrecords)}/{len(filter_records)} aligned to backbone and extracted to {self.temp_align_fastq}")
+        print(f"bad_map_count = {cnt_bad_map}; bad_cov_var = {cnt_cov_var}")
+        if return_seqs:
+            return seqrecords
+
+
     def set_library(self, library_fasta):
         """"
 
