@@ -10,6 +10,22 @@ from collections import defaultdict
 import seaborn as sns
 import subprocess
 
+def run_sys_command(command):
+    print(f'Running command: {command}')
+    result = subprocess.run(
+        command, 
+        shell=True, 
+        stdout=subprocess.DEVNULL,  # Suppress stdout
+        stderr=subprocess.PIPE      # Capture stderr, if needed
+    )
+    
+    # Check the return code for success or failure
+    if result.returncode == 0:
+        print("Command executed successfully.")
+    else:
+        print("Command failed. Error:", result.stderr.decode())
+    return
+
 class NanoporeMap():
     """"
 
@@ -92,14 +108,27 @@ class NanoporeMap():
                             'avg. length': np.mean(self.fastqinfo['length']),
                             'avg. q-score': np.mean(self.fastqinfo['mean_q'])}
         
+        return
+
     # filter reads according to selection criteria and create pairwise alignment dictionary with minimap2
-    def align2backbone(self, backbone_qscore_cutoff = 20, min_length = 1000, return_seqs = False, var_region_qscore_cuttoff = 30, overwrite_var_region = False):
+    def align2backbone(self, backbone_qscore_cutoff = 20,
+                       min_length = 1000,
+                       return_seqs = False,
+                       var_region_qscore_cuttoff = 30,
+                       overwrite_var_region = True,
+                       double_plasmid = True):
         """"
 
         Aligns fastq sequences to a backbone plasmid fasta.
 
         Usage:
-        align2backbone(qscore_cutoff = 20, min_length = 1000, buffer = 5, return_seqs = False)
+        align2backbone(qscore_cutoff = 20,
+                       min_length = 1000, 
+                       buffer = 5, 
+                       return_seqs = False, 
+                       var_region_qscore_cuttoff = 30, 
+                       overwrite_var_region = True,
+                       double_plasmid = True)
 
         Description:
         This function aligns the fastq reads to the backbone fasta and extracts
@@ -115,132 +144,21 @@ class NanoporeMap():
         buffer (int, default 5): amount of buffer sequence on either side of the variable region,
         you might need this to be longer if there is a lot of different sizes of the variable region
         return_seqs (boolean, default False)
+        var_region_qscore_cuttoff (float, default 30): minimum average Q-score allowed for the variable region
+        overwrite_var_region (boolean, default True): if True, overwrites the variable region of the backbone fasta with N's
+        double_plasmid (boolean, default True): if True, doubles the backbone fasta sequence to account for the circular nature of the plasmid and random tagmentation insertion sites.
+        This is only necessary if your sample is an adapter-ligated library.
+        If False, the backbone fasta will be used as is.
 
         Returns
         -----------------------------------------------------
         list of biopython seqrecords if return_seqs = True
 
         """
+        if hasattr(self, 'varDelta'):
+            print("This object has already been aligned to the backbone. If you want to re-align, please create a new object.")
+            return
         
-        
-        # check if fastqinfo exists. if not, create it.
-        if not hasattr(self, 'fastqinfo'):        
-            self.fastq_info(makeplot=False)
-
-            
-        filter_keys = self.fastqinfo[(self.fastqinfo['length'] > min_length) & (self.fastqinfo['mean_q'] > backbone_qscore_cutoff)].index
-        filter_records = [self.fastq_index[k] for k in filter_keys]
-        print(f"{len(filter_records)}/{self.read_count} reads passed length and quality checks.")
-
-        temp_fastq = self.reads_fastq.parent / 'temp.fastq'
-        SeqIO.write(filter_records, temp_fastq, 'fastq')
-
-        # Overwrite variable region with N's and align to this instead.
-        if overwrite_var_region:
-            print("Writing new backbone plasmid with variable region overwritten as N's.")
-            overwrite_seq = Seq.Seq(''.join(['N' if ((ind >= self.varStart - 1) and (ind <= self.varEnd - 1)) else n for ind, n in enumerate(self.backbone_seqrecord.seq)]))
-            new_backbone_fasta = self.backbone_fasta.parent / (self.backbone_fasta.stem + '_Ns' + self.backbone_fasta.suffix)
-            new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_Ns",
-                                            id = self.backbone_seqrecord.name + "_Ns",
-                                            seq = overwrite_seq,
-                                            description = "backbone vector with variable region as Ns")
-
-            self.backbone_fasta = new_backbone_fasta
-            self.backbone_seqrecord = new_backbone_seqrecord
-
-            SeqIO.write(self.backbone_seqrecord, self.backbone_fasta, 'fasta')
-            print(f"New backbone fasta written as: {self.backbone_fasta}") 
-
-
-        temp_align = self.reads_fastq.parent / 'temp.sam'
-        minimap2_call = f'minimap2 -ax map-ont {self.backbone_fasta} {temp_fastq} > {temp_align}'
-        
-        print(minimap2_call)
-        stderr = os.system(minimap2_call)
-        # exit with error if minimap2 returns abnormally
-        if stderr != 0:
-            raise OSError("Minimap2 command failed with abnormal exit status.")
-
-        print("Finished with alignment.")
-
-        seqrecords = []
-        cnt_bad_map = 0
-        cnt_cov_var = 0
-        with pysam.AlignmentFile(temp_align, "r") as alignments:
-            aname = ''
-            for alignment in alignments:
-                
-                if (alignment.is_unmapped) or (alignment.query_length > 1.1*len(self.backbone_seqrecord.seq)):
-                    cnt_bad_map += 1
-                    continue
-                covers_variable_region = (alignment.reference_start < self.varStart) and (alignment.reference_end > self.varEnd)
-                if not covers_variable_region:
-                    cnt_cov_var += 1
-                    continue            
-                        
-                name = alignment.query_name
-                if name == aname:
-                    continue
-                else:
-                    aname = name
-
-                pairwise = np.array(alignment.get_aligned_pairs(matches_only=True))
-                #qual_score = [ord(c)-33 for c in alignment.qqual]
-
-                try:
-                    query_var_start = pairwise[np.where(pairwise[:,1] < (self.varStart - self.buffer))[0][-1],0]
-                    query_var_end = pairwise[np.where(pairwise[:,1] > (self.varEnd + self.buffer))[0][0],0]
-                except:
-                    continue
-
-                
-                quality_scores = [alignment.query_qualities[i] for i in np.arange(query_var_start, query_var_end, 1)]
-                if np.mean(quality_scores) < var_region_qscore_cuttoff:
-                    continue
-            
-                seqrecord = SeqRecord.SeqRecord( name =  name,
-                                                id = name,
-                                                seq = Seq.Seq(alignment.query_sequence[query_var_start:query_var_end]),
-                                                description = "aligned to variable region",
-                                                letter_annotations={"phred_quality": quality_scores})
-
-                seqrecords.append(seqrecord)
-        self.temp_align_fastq = 'temp_aligned.fastq'
-        SeqIO.write(seqrecords, self.temp_align_fastq, 'fastq')
-        print(f"{len(seqrecords)}/{len(filter_records)} aligned to backbone and extracted to {self.temp_align_fastq}")
-        print(f"bad_map_count = {cnt_bad_map}; bad_cov_var = {cnt_cov_var}")
-        if return_seqs:
-            return seqrecords
-
-    # filter reads according to selection criteria and create pairwise alignment dictionary with minimap2
-    def align2backbone1(self, backbone_qscore_cutoff = 20, min_length = 1000, return_seqs = False, var_region_qscore_cuttoff = 30, overwrite_var_region = False, double_plasmid = False):
-        """"
-
-        Aligns fastq sequences to a backbone plasmid fasta.
-
-        Usage:
-        align2backbone(qscore_cutoff = 20, min_length = 1000, buffer = 5, return_seqs = False)
-
-        Description:
-        This function aligns the fastq reads to the backbone fasta and extracts
-        the sequence matching the variable region +/- the specified buffer zone
-        and writes a fastq.
-        If return_seqs is True it will return a list of biopython seqrecords of
-        the sequences in the fastq.
-
-        Parameters
-        -----------------------------------------------------
-        qscore_cutoff (float, default 20): minimum average read Q-score allowed
-        min_length (int, default 1000): minimum allowed read length
-        buffer (int, default 5): amount of buffer sequence on either side of the variable region,
-        you might need this to be longer if there is a lot of different sizes of the variable region
-        return_seqs (boolean, default False)
-
-        Returns
-        -----------------------------------------------------
-        list of biopython seqrecords if return_seqs = True
-
-        """
         # This is the index tracker that records modifications to the variable region start and stop indices for the backbone sequence
         self.varDelta = 0
         
@@ -275,6 +193,8 @@ class NanoporeMap():
 
         if double_plasmid:
             print("Writing new backbone fasta with duplicated non-variable regions.")
+            print("This is to account for the circular nature of the plasmid and random tagmentation insertion sites.")
+            print("If your sample is an adapter-ligated library, you will want to set double_plasmid = False.")
             doubled_seq = Seq.Seq(self.backbone_seqrecord.seq[self.varEnd:] + self.backbone_seqrecord.seq + self.backbone_seqrecord.seq[:self.varStart:])
             new_backbone_seqrecord = SeqRecord.SeqRecord( name =  self.backbone_seqrecord.name + "_doubled",
                                             id = self.backbone_seqrecord.name + "_doubled",
@@ -282,10 +202,11 @@ class NanoporeMap():
                                             description = "backbone vector doubled outside of variable region")
             new_backbone_fasta = self.backbone_fasta.parent / (self.backbone_fasta.stem + '_doubled' + self.backbone_fasta.suffix)
             self.backbone_fasta = new_backbone_fasta
+            self.varDelta = len(self.backbone_seqrecord.seq[self.varEnd:])
             self.backbone_seqrecord = new_backbone_seqrecord
 
             SeqIO.write(self.backbone_seqrecord, self.backbone_fasta, 'fasta')
-            self.varDelta = len(self.backbone_seqrecord.seq[self.varEnd:])
+            
             print(f"New backbone fasta written as: {self.backbone_fasta}")
                  
 
@@ -302,40 +223,48 @@ class NanoporeMap():
         print("Finished with alignment.")
 
         seqrecords = []
-        cnt_bad_map = 0
-        cnt_cov_var = 0
+        counter = np.zeros(6)
         with pysam.AlignmentFile(temp_align, "r") as alignments:
             aname = ''
             for alignment in alignments:
-                
-                if (alignment.is_unmapped) or (alignment.query_length > 1.1*len(self.backbone_seqrecord.seq)):
-                    cnt_bad_map += 1
+                counter[0] += 1
+                # check if the read is mapped and primary; if not, skip it
+                if alignment.is_unmapped or alignment.is_secondary or alignment.is_supplementary:
+                    counter[1] += 1
                     continue
+                # make sure the read covers the variable region
                 covers_variable_region = (alignment.reference_start < self.varStart + self.varDelta) and (alignment.reference_end > self.varEnd + self.varDelta)
                 if not covers_variable_region:
-                    cnt_cov_var += 1
+                    counter[2] += 1
                     continue            
-                        
+
+                # This checks to see whether the read already has an entry. In principle this should be redundant with primary mapped        
                 name = alignment.query_name
                 if name == aname:
+                    counter[3] += 1
                     continue
                 else:
                     aname = name
 
+                # Get the pairwise dictionary for the alignment
                 pairwise = np.array(alignment.get_aligned_pairs(matches_only=True))
-                #qual_score = [ord(c)-33 for c in alignment.qqual]
 
+                # Get the coordinates of the variable region in the query
                 try:
                     query_var_start = pairwise[np.where(pairwise[:,1] < (self.varStart + self.varDelta - self.buffer))[0][-1],0]
                     query_var_end = pairwise[np.where(pairwise[:,1] > (self.varEnd +self.varDelta + self.buffer))[0][0],0]
                 except:
+                    counter[4] += 1
                     continue
 
-                
+                # Get the q-scores for the variable region
                 quality_scores = [alignment.query_qualities[i] for i in np.arange(query_var_start, query_var_end, 1)]
+                # check if the q-scores are above the cutoff and discard if not
                 if np.mean(quality_scores) < var_region_qscore_cuttoff:
+                    counter[5] += 1
                     continue
-            
+                    
+                # Build the SeqRecord object for the variable region
                 seqrecord = SeqRecord.SeqRecord( name =  name,
                                                 id = name,
                                                 seq = Seq.Seq(alignment.query_sequence[query_var_start:query_var_end]),
@@ -346,7 +275,7 @@ class NanoporeMap():
         self.temp_align_fastq = self.reads_fastq.parent / 'temp_aligned.fastq'
         SeqIO.write(seqrecords, self.temp_align_fastq, 'fastq')
         print(f"{len(seqrecords)}/{len(filter_records)} aligned to backbone and extracted to {self.temp_align_fastq}")
-        print(f"bad_map_count = {cnt_bad_map}; bad_cov_var = {cnt_cov_var}")
+        self.counter = counter
         if return_seqs:
             return seqrecords
 
@@ -531,18 +460,18 @@ class NanoporeMap():
         return seq_records_dict        
 
 
-    def extract_barcodes(self, barStart, barEnd):
-        # get read ids for all reads that were mapped to variants.
-        mapped_read_ids = self.match_df.index
-        # write fastq of only these.
-        mapped_read_records = [self.fastq_index[mri] for mri in mapped_read_ids]
-        temp_mapped_read_fastq = 'temp_mapped_read.fastq'
-        SeqIO.write(mapped_read_records, temp_mapped_read_fastq, 'fastq')
+    # def extract_barcodes(self, barStart, barEnd):
+    #     # get read ids for all reads that were mapped to variants.
+    #     mapped_read_ids = self.match_df.index
+    #     # write fastq of only these.
+    #     mapped_read_records = [self.fastq_index[mri] for mri in mapped_read_ids]
+    #     temp_mapped_read_fastq = 'temp_mapped_read.fastq'
+    #     SeqIO.write(mapped_read_records, temp_mapped_read_fastq, 'fastq')
         
-        # make reference fasta for barcode (with 50 buffer on either side).
-        barcode_flank_seq = self.backbone_fasta.seq[barStart - 50: barEnd + 50]
-        barcode_seqrec = SeqRecord.SeqRecord(id = 'barcode_flank', name = 'barcode_flank', description = "barcode +/- 50", seq = barcode_flank_seq)
-        SeqIO.write
+    #     # # make reference fasta for barcode (with 50 buffer on either side).
+    #     # barcode_flank_seq = self.backbone_fasta.seq[barStart - 50: barEnd + 50]
+    #     # barcode_seqrec = SeqRecord.SeqRecord(id = 'barcode_flank', name = 'barcode_flank', description = "barcode +/- 50", seq = barcode_flank_seq)
+    #     # SeqIO.write
 
 class LibVarCount():
     """"
@@ -809,6 +738,266 @@ class LibVarCount():
             varinds = self.fastqinfo.loc[var_df.index].sort_values(by='mean_q', ascending=False)[:number].index
         self.pop_fast(varinds, outname)
 
+        return
+class BarcodeDemultiplex():
+    """"
+
+    Class for demultiplexing barcoded amplicons and focusing on results at positions of interest.
+
+    Usage:
+        bd = BarcodeDemultiplex(barcode_csv, reads_fastq, amplicon_fasta)
+        bd.fastq_info() (optional)
+        bd.map_barcodes(min_overlap = 15, max_error = 0.1, num_cores = 8, makechart = True)
+        bd.identify_edits(edit_position)
+        bd.pop_fast(fast_ids, outname0, keepinds = True)
+    """
+
+    def __init__(self, barcode_csv, reads_fastq, amplicon_fasta):
+        self.barcode_csv = Path(barcode_csv)
+        self.reads_fastq = Path(reads_fastq)
+        self.amplicon_fasta = Path(amplicon_fasta)
+
+        print(f'Indexing fastq: "{str(self.reads_fastq)}"')
+        self.fastq_index = SeqIO.index(str(self.reads_fastq), 'fastq')
+        self.read_count = len(list(self.fastq_index.keys()))        
+        print(f'Fastq contains {self.read_count} reads.')
+
+        self.df_barcode = pd.read_csv(barcode_csv, header=None)
+        col_num = len(self.df_barcode.columns)
+        if col_num == 1:
+            print('Assuming just one column with barcode sequences. Variant naming will be generic, ie. var_0, var_1, etc.')
+            self.df_barcode.rename(columns={0:'barcode'}, inplace=True)
+            self.df_barcode.insert(0, 'var_name', [f'var_{i}' for i in self.df_barcode.index])
+        elif col_num == 2:
+            print('Assuming two columns with variants names and associated barcode sequences.')
+            self.df_barcode.rename(columns={0:'var_name', 1:'barcode'}, inplace=True)
+        else:
+            raise ValueError(f"Seeing {col_num} columns in barcode CSV and I don't know what to do.")
+        self.df_barcode.head(10)
+
+        self.barcodes_fasta = self.barcode_csv.parent / ('barcodes.fasta')
+        print(f'Building fasta of barcodes at {self.barcodes_fasta}')
+        
+        seqrecords = []
+        for bcid, bc in zip(self.df_barcode['var_name'], self.df_barcode['barcode']):
+            seqrecord = SeqRecord.SeqRecord(
+                seq = Seq.Seq(bc),
+                id = bcid,
+                name = bcid,
+                description = '')
+            seqrecords.append(seqrecord)
+        SeqIO.write(seqrecords, self.barcodes_fasta, 'fasta')
+        
+    def fastq_info(self, makeplot=True):
+        """"
+
+        Get some info about the fastq dataset.
+
+        Usage:
+        fastq_info(makeplot=True)
+
+        Description:
+        This gets some information on the fastq read dataset and includes a visualization
+        of read length and quality if makeplot=True
+
+        Parameters
+        -----------------------------------------------------
+        makeplot: boolean, display scatterplot of length vs. mean q-score if True
+
+        Returns
+        -----------------------------------------------------
+        None
+        But it will build a dataframe of read length and average q-scores and a dictionary of
+        summary statistics.
+
+        """
+        read_info = dict()
+        for read in self.fastq_index.keys():
+            record = self.fastq_index[read]
+            read_info[read] = {'length': len(record.seq), 'mean_q': np.mean(record.letter_annotations['phred_quality'])}
+        self.fastqinfo = pd.DataFrame.from_dict(read_info, orient='index')
+
+        if makeplot:
+            sns.jointplot(data=self.fastqinfo, x='length', y='mean_q', s=5)
+            plt.show()
+
+        self.fastq_summary = {'total reads': len(self.fastqinfo),
+                            'avg. length': np.mean(self.fastqinfo['length']),
+                            'avg. q-score': np.mean(self.fastqinfo['mean_q'])}
+        
+        return
+        
+    def map_barcodes(self, min_overlap = 15, max_error = 0.1, num_cores = 8, makechart = True):
+        """"
+
+        Identify barcodes within amplicon reads
+        
+        Requirements, cutadapt.
+        Get with: conda install bioconda::cutadapt
+
+        Usage:
+        bd.map_barcodes(min_overlap = 15, max_error = 0.1, num_cores = 8, makechart = True)
+
+        Description:
+        This maps the barcode sequences given in barcode_csv to amplicons in the reads fastq
+
+        Parameters
+        -----------------------------------------------------
+        min_overlap: int, minimum allowable overlap of barcodes
+        max_error: (int or float), if float must be between 0 and 1 for error rate. If int, represents max allowed mismatches
+        num_cores: int, number of cores for cutadapt run (don't make this more than your computer has!)
+        makechart: boolean, whether to show a pie chart with the distribution of barcodes among the reads
+        -----------------------------------------------------
+        None
+        But it will build two dataframes: bd.df_reads with the mapping between every read id and its identified barcode,
+        and bd.df_hits with the total observation counts for each variant.
+
+        """        
+        
+        self.amplicon_fastq = self.reads_fastq.parent / 'amplicon.fastq'
+
+        cutadapt_call = (f"cutadapt -b file:{self.barcodes_fasta}  --action none --overlap {min_overlap} --rename '{{id}} {{adapter_name}}' "
+                        f"--discard-untrimmed --revcomp -e {max_error} -j {num_cores} --report minimal -o {self.amplicon_fastq} {self.reads_fastq}")
+
+        run_sys_command(cutadapt_call)
+
+        read_barcodes = SeqIO.parse(self.amplicon_fastq, 'fastq')
+        read_bar_dict = {}
+        for rb in read_barcodes:
+            read_bar_dict[rb.id] = {'variant_id':rb.description.split(' ')[1]}
+        
+        self.df_reads = pd.DataFrame.from_dict(read_bar_dict, orient='index')
+        bchits = np.unique(self.df_reads['variant_id'], return_counts=True)
+        sortbc = np.argsort([int(bc.split('_')[1]) for bc in bchits[0]])
+        hits = dict(zip(bchits[0][sortbc], bchits[1][sortbc]))
+        df_hits = pd.DataFrame.from_dict(hits, orient='index')
+        df_hits.rename(columns={0:'counts'}, inplace=True)
+        self.df_hits = df_hits
+        print(f"{df_hits['counts'].sum()}/{self.read_count} ({df_hits['counts'].sum()/self.read_count:.1%}) mapped to barcodes from {self.barcodes_fasta}.")
+        if makechart:        
+            colormap = plt.get_cmap('tab20')    
+            labels = list(df_hits.index) + ['unmapped']
+            counts = list(df_hits['counts']) + [self.read_count - df_hits['counts'].sum()]
+            colors = [colormap(i / (len(counts) - 1)) for i in range(len(counts) - 1)] + ['gray']
+            plt.pie(counts, labels=labels, colors=colors)
+            plt.show()
+        return
+
+
+    def identify_edits(self, edit_position):
+        """"
+
+        Identify edit frequency at designated edit position
+        
+        Requirements, minimap2.
+        Get with: conda install bioconda::minimap2
+
+        Usage:
+        bd.identify_edits(edit_position)
+
+        Description:
+        This aligns the reads with barcodes to the amplicon and then compares the read
+        results at the designated edit position.
+
+        Parameters
+        -----------------------------------------------------
+        edit_position: int, location of the expected edit from the amplicon fasta (0-indexed) 
+        -----------------------------------------------------
+        
+        Returns:
+        -----------------------------------------------------
+        edit_percent dataframe
+        (but also stores it in the object as bd.edit_percent)
+
+        """      
+        
+        
+        if ~hasattr(self, 'amplicon_sam'):
+            print(f"Aligning amplicon sequence ({self.amplicon_fasta}) to reads with barcode matches ({self.amplicon_fastq}).")
+            self.amplicon_sam = self.amplicon_fastq.parent / ("amplicon_barcode_align.sam")
+            minimap2_call = f"minimap2 -ax map-ont {self.amplicon_fasta} {self.amplicon_fastq} > {self.amplicon_sam}"
+            run_sys_command(minimap2_call)
+        else:
+            print(f"Amplicon alignment already exists ({self.amplicon_sam}). Continuing analysis without re-aligning.")
+        
+        edit_dict = {}
+        for var in self.df_barcode['var_name']:
+            edit_dict[var] = {'A':[], 'T':[], 'G':[], 'C':[]}
+        
+        counter = np.zeros(4, dtype=int)
+        with pysam.AlignmentFile(self.amplicon_sam, "r") as alignments:
+            for alignment in alignments:
+                if alignment.is_unmapped or alignment.is_secondary or alignment.is_supplementary:
+                    counter[0] += 1
+                    continue
+                # make sure the read covers the variable region
+                covers_variable_region = (alignment.reference_start < edit_position) and (alignment.reference_end > edit_position)
+                if not covers_variable_region:
+                    counter[1] += 1
+                    continue
+                varname = self.df_reads.loc[alignment.query_name, 'variant_id']
+                try:
+                    pairwise = np.array(alignment.get_aligned_pairs(matches_only=True))                 
+                    editind = pairwise[np.where(pairwise[:,1] == edit_position)[0][0],0]
+                except:
+                    counter[2] += 1
+                    continue
+                alignbase = alignment.query_sequence[editind]
+                alignqual = alignment.query_qualities[editind]
+                edit_dict[varname][alignbase].append(alignqual)
+                counter[3] += 1
+        
+        print(f"Read sequence data at edit position collected from {counter[3]}/{self.df_hits['counts'].sum()} ({counter[3]/self.df_hits['counts'].sum():.1%}) of reads with barcodes.")
+              
+        edit_summary = dict()
+        for key in edit_dict.keys():
+            nuckeys = edit_dict[key].keys()
+            editcounts = np.zeros(len(nuckeys))
+            for nind, nuc in enumerate(nuckeys):
+                editcounts[nind] = np.sum(1-10**(-np.array(edit_dict[key][nuc])/10))
+            edit_summary[key] = dict(zip(nuckeys,editcounts*100/np.sum(editcounts)))
+
+        self.edit_percent = pd.DataFrame.from_dict(edit_summary, orient='index')
+        print(f"Computed read results (%) for position {edit_position}:")
+        self.edit_percent
+        return self.edit_percent
+
+    def pop_fast(self, fast_ids, outname0, keepinds = True):
+        # exports fasta or fastq files from read ids
+        # check if fastqinfo exists. if not, create it.
+        if not hasattr(self, 'fastqinfo'):
+            self.fastq_info(makeplot=False)
+        
+        if Path(outname0).parent != self.workdir:
+            outname = self.workdir / (Path(outname0).stem + Path(outname0).suffix)
+        else:
+            outname = outname0
+    
+        
+        seqrecords = []
+        for ind, fid in enumerate(fast_ids):
+            try:
+                seqrecord = self.fastq_index[fid]
+                if keepinds:
+                    nameind = fid
+                else:
+                    nameind = f'pop{ind}'
+                    
+                seqrecord.id = nameind
+                seqrecord.name = nameind
+                seqrecord.description = ''
+                
+                seqrecords.append(seqrecord)
+            except:
+                print(f'{fid} not found in index.')
+        if (Path(outname).suffix == '.fa') | (Path(outname).suffix == '.fasta'):
+            filetype = 'fasta'
+        elif (Path(outname).suffix == '.fq') | (Path(outname).suffix == '.fastq'):
+            filetype = 'fastq'
+        else:
+            raise ValueError(f'Unknown extension for {outname}. Must be fasta or fastq.') 
+        print(f"Writing {len(seqrecords)} as {filetype} to {outname}")
+        SeqIO.write(seqrecords, outname, filetype)
         return
 
 
