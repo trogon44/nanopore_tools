@@ -915,7 +915,7 @@ class BarcodeDemultiplex():
         """      
         
         
-        if ~hasattr(self, 'amplicon_sam'):
+        if not hasattr(self, 'amplicon_sam'):
             print(f"Aligning amplicon sequence ({self.amplicon_fasta}) to reads with barcode matches ({self.amplicon_fastq}).")
             self.amplicon_sam = self.amplicon_fastq.parent / ("amplicon_barcode_align.sam")
             minimap2_call = f"minimap2 -ax map-ont {self.amplicon_fasta} {self.amplicon_fastq} > {self.amplicon_sam}"
