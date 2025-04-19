@@ -774,7 +774,7 @@ class BarcodeDemultiplex():
         else:
             raise ValueError(f"Seeing {col_num} columns in barcode CSV and I don't know what to do.")
         self.df_barcode.head(10)
-
+        self.col_num = col_num
         self.barcodes_fasta = self.barcode_csv.parent / ('barcodes.fasta')
         print(f'Building fasta of barcodes at {self.barcodes_fasta}')
         
@@ -868,8 +868,11 @@ class BarcodeDemultiplex():
         
         self.df_reads = pd.DataFrame.from_dict(read_bar_dict, orient='index')
         bchits = np.unique(self.df_reads['variant_id'], return_counts=True)
-        sortbc = np.argsort([int(bc.split('_')[1]) for bc in bchits[0]])
-        hits = dict(zip(bchits[0][sortbc], bchits[1][sortbc]))
+        if self.col_num == 1:
+            sortbc = np.argsort([int(bc.split('_')[1]) for bc in bchits[0]])
+            hits = dict(zip(bchits[0][sortbc], bchits[1][sortbc]))
+        else:
+            hits = dict(zip(bchits[0], bchits[1]))
         df_hits = pd.DataFrame.from_dict(hits, orient='index')
         df_hits.rename(columns={0:'counts'}, inplace=True)
         self.df_hits = df_hits
