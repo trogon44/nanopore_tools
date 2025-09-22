@@ -885,7 +885,19 @@ class BarcodeDemultiplex():
             plt.pie(counts, labels=labels, colors=colors)
             plt.show()
         return
-
+    
+    def barcode_demux_fastqs(self, outdir0):
+        outdir = Path(outdir0)
+        print(f'Creating barcode fastq save directory: {outdir}')
+        os.makedirs(outdir, exist_ok = True)
+        print("Iterating over barcodes.")    
+        for var_id in self.df_reads['variant_id'].unique():
+            var_index = self.df_reads[self.df_reads['variant_id'] == var_id].index
+            seqrecords = [self.fastq_index[vi] for vi in var_index]
+            outname = outdir / f"{var_id}.fastq"
+            print(f"Writing {var_id} with {len(var_index)} entries as {outname}")
+            SeqIO.write(seqrecords, outname, 'fastq')
+        return
 
     def identify_edits(self, edit_position):
         """"

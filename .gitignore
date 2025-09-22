@@ -1,0 +1,5 @@
+# Ignore pycache
+__pycache__/
+*.py[cod]
+
+nanopore_tools/__pycache__/
