@@ -899,7 +899,7 @@ class BarcodeDemultiplex():
             SeqIO.write(seqrecords, outname, 'fastq')
         return
 
-    def identify_edits(self, edit_position):
+    def identify_edits(self, edit_position, qscore_weighted = True):
         """"
 
         Identify edit frequency at designated edit position
@@ -969,7 +969,10 @@ class BarcodeDemultiplex():
             nuckeys = edit_dict[key].keys()
             editcounts = np.zeros(len(nuckeys))
             for nind, nuc in enumerate(nuckeys):
-                editcounts[nind] = np.sum(1-10**(-np.array(edit_dict[key][nuc])/10))
+                if qscore_weighted:
+                    editcounts[nind] = np.sum(1-10**(-np.array(edit_dict[key][nuc])/10))
+                else:
+                    editcounts[nind] = len(edit_dict[key][nuc])
             edit_summary[key] = dict(zip(nuckeys,editcounts*100/np.sum(editcounts)))
 
         self.edit_percent = pd.DataFrame.from_dict(edit_summary, orient='index')
